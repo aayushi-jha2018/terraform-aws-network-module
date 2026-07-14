@@ -1,32 +1,6 @@
 # terraform-aws-network-module
 
-A reusable, tested Terraform module that provisions a standard AWS networking layer: a VPC with public and private subnets spread across availability zones, an internet gateway, an optional NAT gateway for private-subnet egress, route tables, and a configurable default security group.
-
-This is not a toy snippet. It is built and validated the way a real infrastructure module should be: with input validation via typed variables, a runnable example, and a CI pipeline that actually runs `terraform fmt`, `terraform validate`, and `terraform plan` on every push — with no AWS account or credentials required.
-
-## Architecture
-
-```
-                         ┌─────────────────────────────┐
-                         │            VPC               │
-                         │                              │
-  Internet ── IGW ───────┼── public subnet(s) ──┐       │
-                         │        │              │       │
-                         │   route table         │       │
-                         │        │         NAT gateway  │
-                         │        │              │       │
-                         │  private subnet(s) ───┘       │
-                         │        │                      │
-                         │   route table                │
-                         │                              │
-                         │   default security group      │
-                         └─────────────────────────────┘
-```
-
-- Public subnets route outbound traffic through an internet gateway and (optionally) auto-assign public IPs.
-- Private subnets route outbound traffic through a single NAT gateway placed in the first public subnet (toggle with `enable_nat_gateway`).
-- Subnets are distributed across the availability zones you provide, wrapping around if there are more subnets than AZs.
-- A default security group is created with a configurable list of ingress rules and an open egress rule, ready to attach to instances or other resources built on top of this module.
+Reusable Terraform module for a standard AWS networking layer -- VPC, public and private subnets across availability zones, an internet gateway, an optional NAT gateway, route tables, and a configurable default security group. Something to build on top of, not a snippet to copy into a blog post.
 
 ## Usage
 
@@ -34,10 +8,10 @@ This is not a toy snippet. It is built and validated the way a real infrastructu
 module "network" {
   source = "github.com/aayushi-jha2018/terraform-aws-network-module"
 
-  name     = "my-app"
-  vpc_cidr = "10.0.0.0/16"
+  name               = "my-app"
+  vpc_cidr           = "10.0.0.0/16"
+  availability_zones = ["us-east-1a", "us-east-1b"]
 
-  availability_zones   = ["us-east-1a", "us-east-1b"]
   public_subnet_cidrs  = ["10.0.0.0/24", "10.0.1.0/24"]
   private_subnet_cidrs = ["10.0.10.0/24", "10.0.11.0/24"]
   enable_nat_gateway   = true
@@ -58,60 +32,47 @@ module "network" {
 }
 ```
 
-A complete, runnable copy of this usage lives in [`examples/basic`](examples/basic) — the exact same configuration validated by CI.
+A runnable copy of this lives in `examples/basic` -- it's the exact config CI validates on every push.
 
-## Inputs
+## How it fits together
 
-| Name | Description | Type | Default |
-|---|---|---|---|
-| `name` | Name prefix applied to all resources | `string` | – (required) |
-| `vpc_cidr` | CIDR block for the VPC | `string` | `"10.0.0.0/16"` |
-| `availability_zones` | AZs to spread subnets across | `list(string)` | `["us-east-1a", "us-east-1b"]` |
-| `public_subnet_cidrs` | CIDR blocks for public subnets | `list(string)` | `["10.0.0.0/24", "10.0.1.0/24"]` |
-| `private_subnet_cidrs` | CIDR blocks for private subnets | `list(string)` | `["10.0.10.0/24", "10.0.11.0/24"]` |
-| `enable_nat_gateway` | Whether to create a NAT gateway for private-subnet egress | `bool` | `true` |
-| `ingress_rules` | Ingress rules for the default security group | `list(object)` | `[]` |
-| `tags` | Tags applied to all resources | `map(string)` | `{}` |
+Public subnets route out through an internet gateway. Private subnets route out through a single NAT gateway sitting in the first public subnet (toggle this with `enable_nat_gateway`). Subnets get spread across whatever AZs you pass in, wrapping around if you give it more subnets than AZs. A default security group comes out the other end with whatever ingress rules you configured and an open egress rule, ready to attach to anything built on top.
 
-## Outputs
+## Inputs / Outputs
 
-| Name | Description |
-|---|---|
-| `vpc_id` | ID of the created VPC |
-| `vpc_cidr_block` | CIDR block of the created VPC |
-| `public_subnet_ids` | IDs of the public subnets |
-| `private_subnet_ids` | IDs of the private subnets |
-| `nat_gateway_ids` | IDs of the NAT gateway(s), if enabled |
-| `default_security_group_id` | ID of the default security group |
+| Input | Description | Default |
+|---|---|---|
+| name | Prefix applied to all resource names | required |
+| vpc_cidr | CIDR block for the VPC | 10.0.0.0/16 |
+| availability_zones | AZs to spread subnets across | ["us-east-1a", "us-east-1b"] |
+| public_subnet_cidrs | CIDR blocks for public subnets | ["10.0.0.0/24", "10.0.1.0/24"] |
+| private_subnet_cidrs | CIDR blocks for private subnets | ["10.0.10.0/24", "10.0.11.0/24"] |
+| enable_nat_gateway | Create a NAT gateway for private egress | true |
+| ingress_rules | Ingress rules for the default security group | [] |
+| tags | Tags applied to all resources | {} |
 
-## Continuous integration
+Outputs: `vpc_id`, `vpc_cidr_block`, `public_subnet_ids`, `private_subnet_ids`, `nat_gateway_ids`, `default_security_group_id`.
 
-Every push runs [`.github/workflows/ci.yml`](.github/workflows/ci.yml), which:
+## Design notes
 
-1. Runs `terraform fmt -check -recursive` to enforce consistent formatting across the module and example.
-2. Runs `terraform init -backend=false` and `terraform validate` on the root module to catch syntax and configuration errors.
-3. Runs the same init/validate steps against [`examples/basic`](examples/basic), the real usage example.
-4. Runs `terraform plan` against the example using fake AWS credentials (`access_key = "test"`, `secret_key = "test"`) combined with the provider's `skip_credentials_validation`, `skip_requesting_account_id`, and `skip_metadata_api_check` flags. This lets Terraform build a full, real execution plan — showing every resource that would be created — without ever contacting an actual AWS account.
+The example only deploys a single NAT gateway, in one AZ. That's fine for a demo and for plenty of real low-traffic setups, but it's a single point of failure -- if that AZ has a bad day, every private subnet loses egress. A production version of this module would take a `one_nat_gateway_per_az` flag and provision one NAT gateway (and EIP) per AZ instead of sharing one for the whole VPC. I kept it to one here mainly to keep the example's plan output small and readable in CI logs, not because it's the right default for a real account.
 
-No cloud credentials or secrets are stored or used anywhere in this repository. The plan step is a genuine `terraform plan` run, not a mocked or hand-written example — you can see the real resource-by-resource output in the Actions tab.
+I also intentionally avoided the `aws_availability_zones` data source, even though it's the more common way to write this kind of module. That data source makes a real API call against an AWS account at plan time, which would break the whole point of this repo -- a `terraform plan` that runs in CI with zero cloud credentials. Passing `availability_zones` in as a plain variable is a little more manual for callers, but it's what keeps the CI plan honest and fully offline.
 
-## Project structure
+## CI
+
+`.github/workflows/ci.yml` runs on every push: `terraform fmt -check`, then `terraform init -backend=false` plus `terraform validate` against both the root module and `examples/basic`, then a real `terraform plan` against the example. The plan step uses fake AWS credentials (`access_key = "test"`) plus the provider's `skip_credentials_validation` / `skip_requesting_account_id` / `skip_metadata_api_check` flags -- a standard pattern that lets Terraform build a genuine, full execution plan without ever touching a real AWS account. Check the Actions tab if you want to see the actual resource-by-resource plan output -- it isn't mocked.
+
+## Structure
 
 ```
 .
-├── main.tf                 # VPC, subnets, gateways, route tables, security group
-├── variables.tf            # Typed input variables with sane defaults
-├── outputs.tf              # VPC/subnet/gateway/security-group outputs
-├── versions.tf             # Terraform + provider version constraints
-├── examples/
-│   └── basic/
-│       └── main.tf         # Runnable example, validated by CI
+├── main.tf              # VPC, subnets, gateways, route tables, security group
+├── variables.tf         # typed inputs with sane defaults
+├── outputs.tf
+├── versions.tf
+├── examples/basic/       # runnable example, the thing CI actually plans
 └── .github/workflows/ci.yml
 ```
 
-## What this demonstrates
-
-- Writing a Terraform module as a reusable, parameterized unit rather than a one-off script.
-- Designing inputs/outputs so the module composes cleanly into a larger stack.
-- Validating infrastructure-as-code in CI without requiring cloud credentials, using the standard fake-credentials-plus-skip-flags pattern.
-- Providing a runnable example that doubles as living documentation and as the thing CI actually checks.
+MIT licensed.
